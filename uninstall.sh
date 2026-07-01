@@ -21,54 +21,38 @@ echo -e "${RED}║       mining-manager uninstaller         ║${NC}"
 echo -e "${RED}╚══════════════════════════════════════════╝${NC}"
 echo ""
 
-# ─── Stop and kill any running miner processes ─────────────────────────────────
-
-info "Stopping any running lolMiner processes…"
-if pkill -x lolMiner 2>/dev/null; then
-    success "lolMiner processes killed"
-else
-    info "No lolMiner processes were running"
-fi
-
-# ─── systemd service ───────────────────────────────────────────────────────────
+# ─── Stop systemd service ─────────────────────────────────────────────────────
 
 info "Stopping systemd service…"
-if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
-    systemctl stop "$SERVICE_NAME"
-    success "Service stopped"
-else
-    info "Service was not running"
-fi
-
-info "Disabling systemd service…"
-if systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null; then
-    systemctl disable "$SERVICE_NAME"
-    success "Service disabled"
-else
-    info "Service was not enabled"
-fi
+systemctl stop "$SERVICE_NAME" 2>/dev/null && success "Service stopped" || info "Service was not running"
+systemctl disable "$SERVICE_NAME" 2>/dev/null && success "Service disabled" || info "Service was not enabled"
 
 if [[ -f "$SERVICE_FILE" ]]; then
     rm -f "$SERVICE_FILE"
     systemctl daemon-reload
-    success "Service file removed and daemon reloaded"
-else
-    info "Service file not found (already removed)"
+    success "Service file removed"
 fi
 
-# ─── Reset GPU clocks to stock ─────────────────────────────────────────────────
+# ─── Kill any stray miner processes ──────────────────────────────────────────
+
+info "Killing any stray miner processes…"
+pkill -x lolMiner      2>/dev/null && success "lolMiner killed"      || true
+pkill -f RainbowMiner  2>/dev/null && success "RainbowMiner killed"  || true
+pkill -f "pwsh.*RainbowMiner" 2>/dev/null || true
+
+# ─── Reset GPU clocks ─────────────────────────────────────────────────────────
 
 if command -v nvidia-smi &>/dev/null; then
     info "Resetting GPU clocks to stock…"
-    nvidia-smi --reset-gpu-clocks    2>/dev/null && true
-    nvidia-smi --reset-memory-clocks 2>/dev/null && true
-    nvidia-smi -pm 0                 2>/dev/null && true
+    nvidia-smi --reset-gpu-clocks    2>/dev/null || true
+    nvidia-smi --reset-memory-clocks 2>/dev/null || true
+    nvidia-smi -pm 0                 2>/dev/null || true
     success "GPU clocks reset"
 else
     warn "nvidia-smi not found — skipping GPU clock reset"
 fi
 
-# ─── lolMiner binary ───────────────────────────────────────────────────────────
+# ─── Remove downloaded binaries and RainbowMiner ─────────────────────────────
 
 if [[ -f "$REPO_DIR/bin/lolMiner" ]]; then
     rm -f "$REPO_DIR/bin/lolMiner"
@@ -76,32 +60,47 @@ if [[ -f "$REPO_DIR/bin/lolMiner" ]]; then
     success "lolMiner binary removed"
 fi
 
-# ─── Optionally remove the repo itself ─────────────────────────────────────────
+if [[ -d "$REPO_DIR/rainbowminer" ]]; then
+    read -r -p "Remove RainbowMiner directory ($REPO_DIR/rainbowminer)? [y/N] " REMOVE_RBM
+    if [[ "${REMOVE_RBM,,}" == "y" ]]; then
+        rm -rf "$REPO_DIR/rainbowminer"
+        success "RainbowMiner directory removed"
+    else
+        warn "Keeping rainbowminer/ (your pool config is preserved there)"
+    fi
+fi
+
+# ─── Optionally remove PowerShell Core ───────────────────────────────────────
+
+if command -v pwsh &>/dev/null; then
+    read -r -p "Remove PowerShell Core (pwsh)? [y/N] " REMOVE_PWSH
+    if [[ "${REMOVE_PWSH,,}" == "y" ]]; then
+        apt-get remove -y powershell 2>/dev/null && success "PowerShell removed" || warn "Could not remove PowerShell via apt"
+    fi
+fi
+
+# ─── Optionally remove the repo ───────────────────────────────────────────────
 
 echo ""
 read -r -p "Remove the entire repo directory ($REPO_DIR)? [y/N] " REMOVE_REPO
 if [[ "${REMOVE_REPO,,}" == "y" ]]; then
-    # Can't delete the directory we're running from — schedule it
-    PARENT="$(dirname "$REPO_DIR")"
-    BASENAME="$(basename "$REPO_DIR")"
     bash -c "sleep 1 && rm -rf '$REPO_DIR'" &
-    success "Repo directory scheduled for removal"
+    success "Repo scheduled for removal"
 else
-    info "Repo directory kept at $REPO_DIR"
-    info "Your .env is preserved there if you want to reinstall later"
+    info "Repo kept at $REPO_DIR (.env preserved for reinstall)"
 fi
 
-# ─── Done ──────────────────────────────────────────────────────────────────────
+# ─── Done ────────────────────────────────────────────────────────────────────
 
 echo ""
 echo -e "${GREEN}[✓] Uninstall complete.${NC}"
 echo ""
 echo "Removed:"
-echo "  • systemd service (mining-manager.service)"
+echo "  • mining-manager systemd service"
 echo "  • lolMiner binary (bin/lolMiner)"
 echo "  • GPU clocks reset to stock"
 echo ""
-echo "NOT removed (system-level, shared with other tools):"
+echo "NOT removed (shared system packages):"
 echo "  • Python packages (requests, python-dotenv)"
 echo "  • Nvidia drivers"
 echo ""

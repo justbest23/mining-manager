@@ -1,21 +1,15 @@
 # mining-manager
 
-RTX 4080 auto-mining daemon. Mines on NiceHash whenever the GPU is idle, pauses the moment anything else uses it (Plex/Jellyfin transcoding, CUDA apps, etc.), and keeps you updated on Discord.
+RTX 4080 auto-mining daemon. Runs **RainbowMiner** (profit-switching across MiningPoolHub and Zpool) whenever the GPU is idle, pauses the moment anything else uses it (Plex/Jellyfin NVENC, any CUDA app), and keeps you updated on Discord and Home Assistant.
 
-## Features
-
-- **Auto-detects GPU usage** — checks NVENC encoder sessions and any CUDA compute process; no process name allowlists
-- **NiceHash + lolMiner** — kHeavyHash (Kaspa) via NiceHash stratum, paid in BTC
-- **Optimised OC profile** — ~153W actual draw, 1270 MH/s (Kryptex-verified)
-- **Discord notifications** — start/stop events, twice-daily status reports, profitability alerts
-- **Home Assistant sensors** — power draw, earnings, electricity cost, session time
-- **Daily profitability check** — auto-stops and alerts if electricity cost exceeds revenue
+**Payout:** LTC → your Luno deposit address  
+**Pools:** MiningPoolHub (primary, 1.1% fee) + Zpool (comparison, 2% fee) — RainbowMiner picks whichever pays more per algorithm in real time
 
 ---
 
 ## Quick start
 
-**Prerequisites:** Linux x86_64, Nvidia drivers with `nvidia-smi`, `python3`, `pip3`, `curl`
+**Prerequisites:** Linux x86_64, Nvidia drivers + `nvidia-smi`, `python3`, `pip3`, `curl`, `unzip`
 
 ```bash
 git clone https://github.com/justbest23/mining-manager.git
@@ -23,26 +17,32 @@ cd mining-manager
 sudo ./setup.sh
 ```
 
-`setup.sh` will:
-1. Download the latest lolMiner binary into `bin/`
-2. Install Python dependencies
-3. Create `.env` from `.env.example`
-4. Install and enable the systemd service
+`setup.sh` installs: PowerShell Core, RainbowMiner, lolMiner (backend), Python deps, systemd service.
 
-Then fill in the three required values:
+### After setup
 
+**1. Fill in `.env`**
 ```bash
 nano .env
 ```
 
-| Variable | Where to find it |
-|----------|-----------------|
-| `NICEHASH_BTC_ADDRESS` | NiceHash → Mining → Mining Address |
+Required values:
+
+| Variable | Where to get it |
+|----------|----------------|
+| `MPH_USERNAME` | Your MiningPoolHub account username |
+| `MPH_API_KEY` | MiningPoolHub → Account → Edit Account → API Key |
+| `MPH_LTC_ADDRESS` | Your Luno LTC deposit address |
+| `ZPOOL_LTC_ADDRESS` | Same Luno LTC deposit address |
 | `DISCORD_WEBHOOK_URL` | Discord channel → Edit → Integrations → Webhooks → New Webhook |
-| `HA_TOKEN` | Home Assistant → Profile → Long-Lived Access Tokens → Create Token |
+| `HA_TOKEN` | Home Assistant → Profile → Long-Lived Access Tokens |
 
-Then start it:
+**2. Write RainbowMiner config from .env**
+```bash
+python3 configure_rainbowminer.py
+```
 
+**3. Start**
 ```bash
 sudo systemctl start mining-manager
 journalctl -u mining-manager -f
@@ -53,145 +53,138 @@ journalctl -u mining-manager -f
 ## How it works
 
 ```
-GPU idle for 60s → apply OC → start lolMiner → mine on NiceHash
-GPU gets used    → stop lolMiner → reset clocks → wait for idle
+GPU idle for 60s  →  apply OC  →  start RainbowMiner  →  mine on best pool/algo
+GPU gets used     →  stop RainbowMiner  →  reset clocks  →  wait for idle
 ```
 
-The daemon polls every 30 seconds. It checks:
-1. **NVENC/NVDEC encoder sessions** — catches Plex and Jellyfin hardware transcoding
-2. **CUDA compute processes** — catches any GPU compute app (filters out lolMiner itself)
-3. **Raw GPU utilisation** — fallback threshold check when no miner is running
+**GPU idle detection** (generic — no process name lists):
+1. NVENC/NVDEC encoder sessions > 0 → transcoding (Plex, Jellyfin)
+2. Any CUDA compute process other than RainbowMiner's child miners → GPU in use
+3. Raw GPU utilisation above threshold (fallback, only when no miner running)
 
-A configurable grace period (default 60s idle before starting, 15s busy before stopping) prevents thrashing.
+**Profit switching** is handled by RainbowMiner internally. It benchmarks each algorithm, queries both pool APIs every 10 minutes, and switches to whichever algorithm/pool combination earns the most after electricity cost.
+
+**OC profile** is applied via `nvidia-smi` on start and reset on stop:
+
+| Setting | Value |
+|---------|-------|
+| Core clock (locked) | 2205 MHz |
+| Power limit | 350W (actual draw ~153W at locked clocks) |
+| Efficiency | ~8.3 MH/W on kHeavyHash |
+
+---
+
+## Pool setup
+
+### MiningPoolHub
+1. Create account at [miningpoolhub.com](https://miningpoolhub.com)
+2. Go to **Account → Edit Account → Auto Exchange** → set target coin to **LTC**
+3. Set your Luno LTC deposit address as the payout address
+4. Copy your API key from the account page
+
+### Zpool
+No registration. Your LTC address is your username. Payouts go directly to your Luno LTC address.
 
 ---
 
 ## Discord
 
-You need a **webhook URL** from a Discord channel. In Discord:
-1. Right-click the channel → **Edit Channel**
-2. **Integrations** → **Webhooks** → **New Webhook**
-3. Copy the URL into `.env` as `DISCORD_WEBHOOK_URL`
+Create a webhook in your mining updates channel:
+1. Right-click channel → **Edit Channel → Integrations → Webhooks → New Webhook**
+2. Copy URL → paste into `.env` as `DISCORD_WEBHOOK_URL`
 
-Notifications sent:
-- ⛏️ **Mining started** (with timestamp)
-- ⏸️ **Mining paused** (reason, duration, estimated earnings)
-- 📊 **Status report** × 2/day (configurable, default 08:00 and 20:00)
-- 🚨 **Unprofitable alert** — auto-stops mining and tells you why
-- ✅ **Profitability restored** — mining will auto-resume
+Notifications:
+- ⛏️ Mining started (worker, algorithm, pool)
+- ⏸️ Mining paused (reason, duration, estimated earnings)
+- 📊 Status report ×2/day (hashrate, kWh, cost, net profit)
+- 🚨 Unprofitable alert (auto-stop)
+- ✅ Profitability restored (auto-resume)
 
 ---
 
 ## Home Assistant sensors
 
-Sensors are created automatically on first run via the HA REST API — no configuration needed in HA.
+Auto-created on first run — no HA configuration needed.
 
 | Sensor | Description |
 |--------|-------------|
 | `sensor.mining_status` | `mining` / `idle` / `paused` |
-| `sensor.mining_gpu_power_w` | Current GPU power draw (W) |
-| `sensor.mining_kwh_today` | Energy consumed today (kWh) |
+| `sensor.mining_gpu_power_w` | GPU power draw (W) |
+| `sensor.mining_kwh_today` | Energy today (kWh) |
 | `sensor.mining_elec_cost_zar` | Electricity cost today (ZAR) |
-| `sensor.mining_net_profit_zar` | Estimated net profit today (ZAR) |
-| `sensor.mining_session_minutes` | Current session duration (min) |
-| `sensor.mining_worker` | Worker name + status attributes |
+| `sensor.mining_net_profit_zar` | Net profit today (ZAR) |
+| `sensor.mining_session_minutes` | Current session duration |
+| `sensor.mining_algorithm` | Current algorithm/pool |
+| `sensor.mining_hashrate` | Current hashrate |
 
 ### Dashboard card
 
 ```yaml
 type: entities
-title: Mining Manager
+title: Mining
 entities:
   - entity: sensor.mining_status
-    name: Status
-    icon: mdi:pickaxe
+  - entity: sensor.mining_algorithm
+  - entity: sensor.mining_hashrate
   - entity: sensor.mining_gpu_power_w
-    name: GPU Power
   - entity: sensor.mining_kwh_today
-    name: kWh Today
   - entity: sensor.mining_elec_cost_zar
-    name: Electricity Cost
   - entity: sensor.mining_net_profit_zar
-    name: Net Profit
   - entity: sensor.mining_session_minutes
-    name: Session Duration
 ```
 
 ---
 
-## Configuration reference
-
-All settings live in `.env`. Defaults are sane — the only required fields are marked above.
+## Updating RainbowMiner
 
 ```bash
-# Check interval and grace periods
-CHECK_INTERVAL=30          # seconds between GPU state polls
-IDLE_GRACE_PERIOD=60       # seconds idle before mining starts
-BUSY_GRACE_PERIOD=15       # seconds busy before mining stops
-
-# Electricity (update when Tshwane tariffs change, usually 1 July)
-ELECTRICITY_RATE_ZAR=4.09  # Block 4 prepaid rate
-USD_ZAR_RATE=16.52
-
-# Report schedule (24h HH:MM, comma-separated)
-REPORT_TIMES=08:00,20:00
-PROFITABILITY_CHECK_TIME=06:00
+rm -rf rainbowminer/
+sudo ./setup.sh        # re-downloads latest release
+python3 configure_rainbowminer.py   # rewrites config from .env
+sudo systemctl restart mining-manager
 ```
 
----
+## Updating tariff rate
 
-## OC profile
-
-Applied via lolMiner flags — no separate `nvidia-settings` or `nvidia-smi` OC commands needed.
-
-| Parameter | Value |
-|-----------|-------|
-| Core clock | 2205 MHz (locked) |
-| Memory clock | 810 MHz (locked) |
-| Power limit set | 350W |
-| Actual draw | ~153W |
-| kHeavyHash hashrate | ~1270 MH/s |
-| Efficiency | 8.3 MH/W |
-
-Source: [Kryptex community profile](https://www.kryptex.com/en/overclocking/nvidia-rtx-4080-micron-medium-overclock-3), 96% approval.
-Clocks are reset to stock automatically when mining stops.
+Edit `.env` → change `ELECTRICITY_RATE_ZAR` → re-run `configure_rainbowminer.py` (updates the PowerPrice in RainbowMiner config too) → restart service.
 
 ---
 
-## Updating lolMiner
+## Uninstall
 
 ```bash
-rm bin/lolMiner
-sudo ./setup.sh
+sudo ./uninstall.sh
 ```
+
+Stops service, kills miners, resets GPU clocks, removes binaries. Optionally removes RainbowMiner, PowerShell, and the repo directory.
 
 ---
 
 ## Troubleshooting
 
-**Miner doesn't start**
+**Service won't start**
 ```bash
 journalctl -u mining-manager -f
 ```
-Check that `LOLMINER_PATH` in `.env` points to an executable binary.
 
-**GPU clocks not resetting**
-The service runs as root. Check `nvidia-persistenced` is running:
+**RainbowMiner not found / not configured**
+```bash
+python3 configure_rainbowminer.py   # regenerate config from .env
+```
+
+**GPU not resetting clocks**
 ```bash
 systemctl status nvidia-persistenced
+nvidia-smi --reset-gpu-clocks
 ```
 
 **Discord not working**
-Test your webhook:
 ```bash
 curl -X POST -H 'Content-Type: application/json' \
-  -d '{"content":"test"}' \
-  "$DISCORD_WEBHOOK_URL"
+  -d '{"content":"test"}' "$DISCORD_WEBHOOK_URL"
 ```
 
-**HA sensors not appearing**
-Test your token:
+**HA sensors not appearing** — wait 60s after start; check token:
 ```bash
 curl -H "Authorization: Bearer $HA_TOKEN" "$HA_URL/api/"
 ```
-Sensors appear automatically after the first update cycle (~60s after start).

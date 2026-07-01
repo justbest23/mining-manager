@@ -1,5 +1,6 @@
 .env
 bin/
+rainbowminer/
 *.log
 __pycache__/
 *.pyc
