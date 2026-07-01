@@ -1,0 +1,21 @@
+[Unit]
+Description=RTX 4080 Auto-Mining Manager
+After=network-online.target nvidia-persistenced.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/troggoman/mining-manager
+ExecStart=/usr/bin/python3 /home/troggoman/mining-manager/mining_manager.py
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+
+# Allow GPU management
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/root/.Xauthority
+
+[Install]
+WantedBy=multi-user.target
