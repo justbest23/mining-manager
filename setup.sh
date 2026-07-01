@@ -105,6 +105,17 @@ print((linux or urls or [''])[0])
     success "RainbowMiner $RBM_VERSION installed to $RBM_DIR"
 fi
 
+# RainbowMiner has a Linux path bug: it computes Config/Config/config.txt
+# (double Config) when writing its runtime config file. Create the directory
+# so it can write there; without it, config initialisation silently fails.
+mkdir -p "$RBM_DIR/Config/Config"
+success "Created Config/Config/ workaround directory"
+
+# Fix permissions on all Linux helper scripts
+find "$RBM_DIR/IncludesLinux" -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
+[[ -f "$RBM_DIR/install.sh" ]] && chmod +x "$RBM_DIR/install.sh"
+success "Fixed Linux script permissions"
+
 # ─── lolMiner (used by RainbowMiner as a backend miner) ───────────────────────
 
 mkdir -p "$BIN_DIR"
