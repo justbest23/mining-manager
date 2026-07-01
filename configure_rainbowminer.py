@@ -62,7 +62,7 @@ config = {
     "PowerPrice":            str(power_price_usd),
     "PowerOffset":           "0",
     "PowerPriceCurrency":    "USD",
-    "CheckProfitability":    "1",
+    "CheckProfitability":    "0",
     "EnableMiningHeatControl": "0",
     "APIport":               RBM_API_PORT,
     "APIthrottle":           "0",
