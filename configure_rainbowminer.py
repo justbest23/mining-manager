@@ -49,7 +49,7 @@ config = {
     "PoolBalances":          "MiningPoolHub,Zpool",
     "Algorithm":             "",
     "ExcludeAlgorithm":      "",
-    "MinerName":             "lolMiner,TeamRedMiner,GMiner,TRex",
+    "MinerName":             "",
     "ExcludeMinerName":      "",
     "DeviceName":            "GPU",
     "ExcludeDeviceName":     "",
@@ -117,20 +117,8 @@ pools_path = CONFIG_DIR / "pools.config.json"
 pools_path.write_text(json.dumps(pools_config, indent=4))
 print(f"[✓] Written {pools_path}")
 
-# ─── miners.config.json — point lolMiner to the local bin/ ────────────────────
-
-lolminer_bin = Path(__file__).parent / "bin" / "lolMiner"
-
-miners_config = {
-    "lolMiner": {
-        "Path":    str(lolminer_bin),
-        "Enable":  "1",
-    }
-}
-
-miners_path = CONFIG_DIR / "miners.config.json"
-miners_path.write_text(json.dumps(miners_config, indent=4))
-print(f"[✓] Written {miners_path}")
+# miners.config.json — let RainbowMiner manage its own miner binaries
+# (it downloads them automatically; we don't write this file)
 
 # ─── Summary ───────────────────────────────────────────────────────────────────
 
