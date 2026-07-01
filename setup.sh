@@ -67,35 +67,41 @@ else
     info "Fetching latest RainbowMiner release…"
     RBM_JSON="$(curl -sf https://api.github.com/repos/RainbowMiner/RainbowMiner/releases/latest)"
     RBM_VERSION="$(echo "$RBM_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['tag_name'])")"
+    # Prefer the Linux-specific zip; fall back to generic zip (not Windows)
     RBM_URL="$(echo "$RBM_JSON" | python3 -c "
 import json, sys
 assets = json.load(sys.stdin)['assets']
-url = next((a['browser_download_url'] for a in assets if a['name'].endswith('.zip') and 'win' not in a['name'].lower()), None)
-if url is None:
-    # Fall back to source zip
-    tag = json.loads(open('/dev/stdin').read() if False else '{}')
-    print('')
-else:
-    print(url)
+urls = [a['browser_download_url'] for a in assets if a['name'].endswith('.zip') and '_win' not in a['name'].lower()]
+# Prefer _linux build
+linux = [u for u in urls if '_linux' in u.lower()]
+print((linux or urls or [''])[0])
 " 2>/dev/null || echo "")"
 
     if [[ -z "$RBM_URL" ]]; then
-        # Use source archive as fallback
         RBM_URL="https://github.com/RainbowMiner/RainbowMiner/archive/refs/tags/${RBM_VERSION}.zip"
         info "Using source archive: $RBM_URL"
     fi
 
-    info "Downloading RainbowMiner $RBM_VERSION…"
+    info "Downloading RainbowMiner $RBM_VERSION from $RBM_URL…"
     TMPDIR_RBM="$(mktemp -d)"
     trap 'rm -rf "$TMPDIR_RBM"' EXIT
 
     curl -L --progress-bar "$RBM_URL" -o "$TMPDIR_RBM/RainbowMiner.zip"
-    unzip -q "$TMPDIR_RBM/RainbowMiner.zip" -d "$TMPDIR_RBM"
+    unzip -q "$TMPDIR_RBM/RainbowMiner.zip" -d "$TMPDIR_RBM/extracted"
 
-    # Find the extracted directory (may be versioned)
-    RBM_EXTRACTED="$(find "$TMPDIR_RBM" -maxdepth 1 -type d | grep -v "^$TMPDIR_RBM$" | head -1)"
+    # Some releases wrap files in a versioned subdirectory; others extract flat
+    SUBDIR="$(find "$TMPDIR_RBM/extracted" -maxdepth 1 -type d | grep -v "^$TMPDIR_RBM/extracted$" | head -1)"
+    if [[ -f "$SUBDIR/RainbowMiner.ps1" ]]; then
+        RBM_EXTRACTED="$SUBDIR"
+    elif [[ -f "$TMPDIR_RBM/extracted/RainbowMiner.ps1" ]]; then
+        RBM_EXTRACTED="$TMPDIR_RBM/extracted"
+    else
+        die "Could not find RainbowMiner.ps1 in extracted archive. Contents: $(ls "$TMPDIR_RBM/extracted/")"
+    fi
+
     mkdir -p "$RBM_DIR"
-    cp -r "$RBM_EXTRACTED"/. "$RBM_DIR/"
+    # rsync-style copy: preserve existing Config/ (user settings) if present
+    cp -rn "$RBM_EXTRACTED"/. "$RBM_DIR/"
     success "RainbowMiner $RBM_VERSION installed to $RBM_DIR"
 fi
 
