@@ -31,6 +31,9 @@ def _env(key, default=None, cast=str):
     return cast(val) if cast else val
 
 RAINBOWMINER_DIR      = Path(_env("RAINBOWMINER_DIR", "./rainbowminer")).resolve()
+EXCLUDED_PROCESS_PATTERNS = [
+    p.strip() for p in os.getenv("EXCLUDED_PROCESS_PATTERNS", "").split(",") if p.strip()
+]
 RAINBOWMINER_API_PORT = _env("RAINBOWMINER_API_PORT", "4000", int)
 WORKER_NAME           = _env("WORKER_NAME", "trog-4080")
 GPU_CORE_CLOCK_LOCK   = _env("GPU_CORE_CLOCK_LOCK", "2205")
@@ -122,8 +125,11 @@ def get_gpu_state() -> tuple:
             name = parts[1] if len(parts) > 1 else "unknown"
             if miner_proc and pid == miner_proc.pid:
                 continue
-            # Also skip child processes of our miner (pwsh spawns the actual miner)
+            # Skip child processes of our miner (pwsh spawns the actual miner binary)
             if miner_proc and _is_child_of(pid, miner_proc.pid):
+                continue
+            # Skip processes matching user-configured exclusion patterns
+            if any(pat in name for pat in EXCLUDED_PROCESS_PATTERNS):
                 continue
             others.append(f"{name} (pid {pid})")
         if others:
@@ -522,6 +528,10 @@ def main():
 
     log.info("mining_manager starting up")
     log.info(f"RainbowMiner dir: {RAINBOWMINER_DIR}")
+    if EXCLUDED_PROCESS_PATTERNS:
+        log.info(f"Ignoring GPU processes matching: {', '.join(EXCLUDED_PROCESS_PATTERNS)}")
+    else:
+        log.info("No process exclusions configured (EXCLUDED_PROCESS_PATTERNS is empty)")
 
     sched = Scheduler()
     for t in REPORT_TIMES:
