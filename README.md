@@ -1,86 +1,102 @@
 # mining-manager
 
-RTX 4080 auto-mining daemon for Trog's server.
+RTX 4080 auto-mining daemon. Mines on NiceHash whenever the GPU is idle, pauses the moment anything else uses it (Plex/Jellyfin transcoding, CUDA apps, etc.), and keeps you updated on Discord.
 
-- Mines on **NiceHash** (lolMiner → kHeavyHash stratum) when the GPU is idle
-- Detects any GPU usage (Plex/Jellyfin NVENC, any CUDA process) and pauses automatically
-- Applies optimised OC profile (~153W actual draw, 1270 MH/s on Kaspa)
-- Sends **Discord** notifications: start/stop events, twice-daily reports, profitability alerts
-- Pushes **Home Assistant** sensors every 60s
-- Daily profitability check — auto-stops if net profit ≤ $0
+## Features
 
----
-
-## Prerequisites
-
-### 1. Nvidia drivers with nvidia-smi
-
-```bash
-nvidia-smi  # should show your RTX 4080
-```
-
-### 2. lolMiner
-
-Download the latest release from https://github.com/Lolliedieb/lolMiner-releases
-
-```bash
-mkdir -p /opt/lolMiner
-tar -xf lolMiner_*.tar.gz -C /opt/lolMiner --strip-components=1
-chmod +x /opt/lolMiner/lolMiner
-```
-
-### 3. Python dependencies
-
-```bash
-cd /home/troggoman/mining-manager
-pip3 install -r requirements.txt
-```
+- **Auto-detects GPU usage** — checks NVENC encoder sessions and any CUDA compute process; no process name allowlists
+- **NiceHash + lolMiner** — kHeavyHash (Kaspa) via NiceHash stratum, paid in BTC
+- **Optimised OC profile** — ~153W actual draw, 1270 MH/s (Kryptex-verified)
+- **Discord notifications** — start/stop events, twice-daily status reports, profitability alerts
+- **Home Assistant sensors** — power draw, earnings, electricity cost, session time
+- **Daily profitability check** — auto-stops and alerts if electricity cost exceeds revenue
 
 ---
 
-## Setup
+## Quick start
 
-### 1. Copy and fill in .env
+**Prerequisites:** Linux x86_64, Nvidia drivers with `nvidia-smi`, `python3`, `pip3`, `curl`
 
 ```bash
-cp .env.example .env
+git clone https://github.com/justbest23/mining-manager.git
+cd mining-manager
+sudo ./setup.sh
+```
+
+`setup.sh` will:
+1. Download the latest lolMiner binary into `bin/`
+2. Install Python dependencies
+3. Create `.env` from `.env.example`
+4. Install and enable the systemd service
+
+Then fill in the three required values:
+
+```bash
 nano .env
 ```
 
-Required fields:
-- `NICEHASH_BTC_ADDRESS` — your BTC address from NiceHash (Settings → Withdrawal)
-- `DISCORD_WEBHOOK_URL` — from Discord channel → Integrations → Webhooks
-- `HA_TOKEN` — Home Assistant → Profile → Long-Lived Access Tokens → Create Token
+| Variable | Where to find it |
+|----------|-----------------|
+| `NICEHASH_BTC_ADDRESS` | NiceHash → Mining → Mining Address |
+| `DISCORD_WEBHOOK_URL` | Discord channel → Edit → Integrations → Webhooks → New Webhook |
+| `HA_TOKEN` | Home Assistant → Profile → Long-Lived Access Tokens → Create Token |
 
-Optional but useful:
-- `JELLYFIN_API_KEY` — Jellyfin dashboard → API keys (just for richer stop-reason labels)
-
-### 2. NiceHash account
-
-1. Create account at nicehash.com
-2. Go to **Mining → Mining Address** — copy your BTC deposit address
-3. Set minimum withdrawal threshold to something sensible (0.001 BTC)
-4. Payouts go directly to Luno via BTC deposit address
-
-### 3. Install systemd service
+Then start it:
 
 ```bash
-cp systemd/mining-manager.service /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable mining-manager
-systemctl start mining-manager
-```
-
-Check logs:
-```bash
+sudo systemctl start mining-manager
 journalctl -u mining-manager -f
 ```
 
 ---
 
-## Home Assistant Dashboard Card
+## How it works
 
-Add this to any dashboard YAML:
+```
+GPU idle for 60s → apply OC → start lolMiner → mine on NiceHash
+GPU gets used    → stop lolMiner → reset clocks → wait for idle
+```
+
+The daemon polls every 30 seconds. It checks:
+1. **NVENC/NVDEC encoder sessions** — catches Plex and Jellyfin hardware transcoding
+2. **CUDA compute processes** — catches any GPU compute app (filters out lolMiner itself)
+3. **Raw GPU utilisation** — fallback threshold check when no miner is running
+
+A configurable grace period (default 60s idle before starting, 15s busy before stopping) prevents thrashing.
+
+---
+
+## Discord
+
+You need a **webhook URL** from a Discord channel. In Discord:
+1. Right-click the channel → **Edit Channel**
+2. **Integrations** → **Webhooks** → **New Webhook**
+3. Copy the URL into `.env` as `DISCORD_WEBHOOK_URL`
+
+Notifications sent:
+- ⛏️ **Mining started** (with timestamp)
+- ⏸️ **Mining paused** (reason, duration, estimated earnings)
+- 📊 **Status report** × 2/day (configurable, default 08:00 and 20:00)
+- 🚨 **Unprofitable alert** — auto-stops mining and tells you why
+- ✅ **Profitability restored** — mining will auto-resume
+
+---
+
+## Home Assistant sensors
+
+Sensors are created automatically on first run via the HA REST API — no configuration needed in HA.
+
+| Sensor | Description |
+|--------|-------------|
+| `sensor.mining_status` | `mining` / `idle` / `paused` |
+| `sensor.mining_gpu_power_w` | Current GPU power draw (W) |
+| `sensor.mining_kwh_today` | Energy consumed today (kWh) |
+| `sensor.mining_elec_cost_zar` | Electricity cost today (ZAR) |
+| `sensor.mining_net_profit_zar` | Estimated net profit today (ZAR) |
+| `sensor.mining_session_minutes` | Current session duration (min) |
+| `sensor.mining_worker` | Worker name + status attributes |
+
+### Dashboard card
 
 ```yaml
 type: entities
@@ -101,63 +117,81 @@ entities:
     name: Session Duration
 ```
 
-Or use a **Glance card** for a compact view:
+---
 
-```yaml
-type: glance
-title: Mining
-entities:
-  - sensor.mining_status
-  - sensor.mining_gpu_power_w
-  - sensor.mining_net_profit_zar
-  - sensor.mining_session_minutes
+## Configuration reference
+
+All settings live in `.env`. Defaults are sane — the only required fields are marked above.
+
+```bash
+# Check interval and grace periods
+CHECK_INTERVAL=30          # seconds between GPU state polls
+IDLE_GRACE_PERIOD=60       # seconds idle before mining starts
+BUSY_GRACE_PERIOD=15       # seconds busy before mining stops
+
+# Electricity (update when Tshwane tariffs change, usually 1 July)
+ELECTRICITY_RATE_ZAR=4.09  # Block 4 prepaid rate
+USD_ZAR_RATE=16.52
+
+# Report schedule (24h HH:MM, comma-separated)
+REPORT_TIMES=08:00,20:00
+PROFITABILITY_CHECK_TIME=06:00
 ```
 
 ---
 
-## Overclock Profile
+## OC profile
 
-Applied automatically via lolMiner flags. No separate nvidia-settings needed.
+Applied via lolMiner flags — no separate `nvidia-settings` or `nvidia-smi` OC commands needed.
 
-| Parameter | Value | Note |
-|-----------|-------|------|
-| Core clock | 2205 MHz | Locked |
-| Memory clock | 810 MHz | Locked (compute-bound algo, low mem is fine) |
-| Power limit | 350W set | Actual draw ~153W due to locked clocks |
-| Hashrate | ~1270 MH/s | kHeavyHash (Kaspa) |
-| Efficiency | 8.3 MH/W | Community-verified, 96% approval on Kryptex |
+| Parameter | Value |
+|-----------|-------|
+| Core clock | 2205 MHz (locked) |
+| Memory clock | 810 MHz (locked) |
+| Power limit set | 350W |
+| Actual draw | ~153W |
+| kHeavyHash hashrate | ~1270 MH/s |
+| Efficiency | 8.3 MH/W |
 
+Source: [Kryptex community profile](https://www.kryptex.com/en/overclocking/nvidia-rtx-4080-micron-medium-overclock-3), 96% approval.
 Clocks are reset to stock automatically when mining stops.
 
 ---
 
-## Updating tariff rate
+## Updating lolMiner
 
-When Tshwane updates prepaid tariffs (usually 1 July each year), update `.env`:
-
+```bash
+rm bin/lolMiner
+sudo ./setup.sh
 ```
-ELECTRICITY_RATE_ZAR=4.09   # Update this to new Block 4 rate
-USD_ZAR_RATE=16.52           # Update periodically
-```
-
-No restart needed — values are read at runtime for each report/check.
 
 ---
 
 ## Troubleshooting
 
 **Miner doesn't start**
-- Check `journalctl -u mining-manager -f`
-- Verify `LOLMINER_PATH` points to the binary
-- Run `nvidia-smi` to confirm GPU is visible
+```bash
+journalctl -u mining-manager -f
+```
+Check that `LOLMINER_PATH` in `.env` points to an executable binary.
 
-**GPU not resetting clocks after stop**
-- Service runs as root; `nvidia-smi --reset-gpu-clocks` requires root
-- Check `nvidia-persistenced` is running: `systemctl status nvidia-persistenced`
+**GPU clocks not resetting**
+The service runs as root. Check `nvidia-persistenced` is running:
+```bash
+systemctl status nvidia-persistenced
+```
 
-**Discord notifications not arriving**
-- Test webhook manually: `curl -X POST -H 'Content-Type: application/json' -d '{"content":"test"}' YOUR_WEBHOOK_URL`
+**Discord not working**
+Test your webhook:
+```bash
+curl -X POST -H 'Content-Type: application/json' \
+  -d '{"content":"test"}' \
+  "$DISCORD_WEBHOOK_URL"
+```
 
 **HA sensors not appearing**
-- Check HA token is valid: `curl -H "Authorization: Bearer TOKEN" https://homeass.trog.co.za/api/`
-- Sensors are created automatically on first push — no config needed in HA
+Test your token:
+```bash
+curl -H "Authorization: Bearer $HA_TOKEN" "$HA_URL/api/"
+```
+Sensors appear automatically after the first update cycle (~60s after start).
