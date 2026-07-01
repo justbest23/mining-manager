@@ -97,7 +97,7 @@ if MPH_ENABLED:
         "User":             MPH_USERNAME,
         "API_Key":          MPH_API_KEY,
         "Worker":           WORKER_NAME,
-        "Wallets":          {"LTC": MPH_LTC_ADDRESS},
+        "LTC":              MPH_LTC_ADDRESS,
         "Penalty":          "0",
         "Algorithm":        "",
         "ExcludeAlgorithm": "",
@@ -106,7 +106,7 @@ if MPH_ENABLED:
     }
 
 pools_config["Zpool"] = {
-    "Wallets":          {"LTC": ZPOOL_LTC_ADDRESS},
+    "LTC":              ZPOOL_LTC_ADDRESS,
     "Worker":           WORKER_NAME,
     "Penalty":          "0",
     "Algorithm":        "",
