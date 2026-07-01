@@ -24,29 +24,35 @@ def _env(key, default=None):
 
 RAINBOWMINER_DIR  = Path(_env("RAINBOWMINER_DIR", "./rainbowminer")).resolve()
 WORKER_NAME       = _env("WORKER_NAME", "trog-4080")
-MPH_USERNAME      = _env("MPH_USERNAME")
-MPH_API_KEY       = _env("MPH_API_KEY")
-MPH_LTC_ADDRESS   = _env("MPH_LTC_ADDRESS")
 ZPOOL_LTC_ADDRESS = _env("ZPOOL_LTC_ADDRESS")
 ELECTRICITY_RATE_ZAR = float(_env("ELECTRICITY_RATE_ZAR", "4.09"))
 USD_ZAR_RATE      = float(_env("USD_ZAR_RATE", "16.52"))
 RBM_API_PORT      = _env("RAINBOWMINER_API_PORT", "4000")
 
+# MiningPoolHub is optional — skip if credentials are still placeholders
+MPH_USERNAME  = os.getenv("MPH_USERNAME", "")
+MPH_API_KEY   = os.getenv("MPH_API_KEY", "")
+MPH_LTC_ADDRESS = os.getenv("MPH_LTC_ADDRESS", ZPOOL_LTC_ADDRESS)
+
+PLACEHOLDERS = {"your_mph_username", "your_mph_api_key", ""}
+MPH_ENABLED = MPH_USERNAME not in PLACEHOLDERS and MPH_API_KEY not in PLACEHOLDERS
+
 CONFIG_DIR = RAINBOWMINER_DIR / "Config"
 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
-# Power price in USD/kWh
 power_price_usd = round(ELECTRICITY_RATE_ZAR / USD_ZAR_RATE, 6)
+
+active_pools = ("MiningPoolHub,Zpool" if MPH_ENABLED else "Zpool")
 
 # ─── config.json ───────────────────────────────────────────────────────────────
 
 config = {
-    "Wallet":                MPH_LTC_ADDRESS,
+    "Wallet":                ZPOOL_LTC_ADDRESS,
     "WorkerName":            WORKER_NAME,
-    "Username":              MPH_USERNAME,
+    "Username":              MPH_USERNAME if MPH_ENABLED else "",
     "Currency":              "USD",
-    "Pools":                 "MiningPoolHub,Zpool",
-    "PoolBalances":          "MiningPoolHub,Zpool",
+    "Pools":                 active_pools,
+    "PoolBalances":          active_pools,
     "Algorithm":             "",
     "ExcludeAlgorithm":      "",
     "MinerName":             "",
@@ -84,33 +90,29 @@ print(f"[✓] Written {config_path}")
 
 # ─── pools.config.json ─────────────────────────────────────────────────────────
 
-pools_config = {
-    "MiningPoolHub": {
+pools_config = {}
+
+if MPH_ENABLED:
+    pools_config["MiningPoolHub"] = {
         "User":             MPH_USERNAME,
         "API_Key":          MPH_API_KEY,
         "Worker":           WORKER_NAME,
-        "Wallets": {
-            "LTC": MPH_LTC_ADDRESS,
-        },
-        "Penalty":          "0",
-        "Algorithm":        "",
-        "ExcludeAlgorithm": "",
-        "CoinName":         "",
-        "ExcludeCoin":      "",
-        "SSL":              "0",
-        "Enable":           "1",
-    },
-    "Zpool": {
-        "Wallets": {
-            "LTC": ZPOOL_LTC_ADDRESS,
-        },
-        "Worker":           WORKER_NAME,
+        "Wallets":          {"LTC": MPH_LTC_ADDRESS},
         "Penalty":          "0",
         "Algorithm":        "",
         "ExcludeAlgorithm": "",
         "SSL":              "0",
         "Enable":           "1",
-    },
+    }
+
+pools_config["Zpool"] = {
+    "Wallets":          {"LTC": ZPOOL_LTC_ADDRESS},
+    "Worker":           WORKER_NAME,
+    "Penalty":          "0",
+    "Algorithm":        "",
+    "ExcludeAlgorithm": "",
+    "SSL":              "0",
+    "Enable":           "1",
 }
 
 pools_path = CONFIG_DIR / "pools.config.json"
@@ -124,8 +126,11 @@ print(f"[✓] Written {pools_path}")
 
 print()
 print("RainbowMiner configured:")
-print(f"  Pools  : MiningPoolHub ({MPH_USERNAME}) + Zpool")
-print(f"  Payout : LTC → {MPH_LTC_ADDRESS[:12]}…")
+if MPH_ENABLED:
+    print(f"  Pools  : MiningPoolHub ({MPH_USERNAME}) + Zpool")
+else:
+    print(f"  Pools  : Zpool only (add MPH_USERNAME/MPH_API_KEY to .env to enable MiningPoolHub)")
+print(f"  Payout : LTC → {ZPOOL_LTC_ADDRESS[:12]}…")
 print(f"  Power  : ${power_price_usd:.4f}/kWh (R{ELECTRICITY_RATE_ZAR}/kWh ÷ R{USD_ZAR_RATE})")
 print(f"  API    : http://localhost:{RBM_API_PORT}")
 print()
