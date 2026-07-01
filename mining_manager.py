@@ -31,9 +31,6 @@ def _env(key, default=None, cast=str):
     return cast(val) if cast else val
 
 RAINBOWMINER_DIR      = Path(_env("RAINBOWMINER_DIR", "./rainbowminer")).resolve()
-EXCLUDED_PROCESS_PATTERNS = [
-    p.strip() for p in os.getenv("EXCLUDED_PROCESS_PATTERNS", "").split(",") if p.strip()
-]
 RAINBOWMINER_API_PORT = _env("RAINBOWMINER_API_PORT", "4000", int)
 WORKER_NAME           = _env("WORKER_NAME", "trog-4080")
 GPU_CORE_CLOCK_LOCK   = _env("GPU_CORE_CLOCK_LOCK", "2205")
@@ -90,11 +87,23 @@ def _smi(*args) -> str:
 
 
 def get_gpu_state() -> tuple:
-    """Returns ('idle', '') or ('busy', reason_str)."""
+    """
+    Returns ('idle', '') or ('busy', reason_str).
 
-    # 1. Encoder / decoder sessions — query separately (decoder field absent on some drivers)
+    Strategy:
+      1. Encoder sessions > 0  →  transcoding (Plex/Jellyfin NVENC).  Always stop.
+      2. nvidia-smi pmon gives per-process SM% utilisation.  We sum SM% of every
+         process that is NOT part of our own miner tree.  If that sum exceeds
+         GPU_UTIL_THRESHOLD the GPU is genuinely busy with something else.
+         This means Frigate sitting at 0-2% SM is ignored; Frigate actively
+         running inference at 30%+ triggers a pause — no hard-coded names needed.
+      3. Fallback: raw GPU util when pmon is unavailable and miner is not running.
+    """
+
+    # 1. Encoder / decoder sessions — query separately (decoder absent on some drivers)
     enc, dec = 0, 0
-    for field, slot in [("encoder.stats.sessionCount", "enc"), ("decoder.stats.sessionCount", "dec")]:
+    for field, slot in [("encoder.stats.sessionCount", "enc"),
+                        ("decoder.stats.sessionCount",  "dec")]:
         try:
             val = int(_smi(f"--query-gpu={field}", "--format=csv,noheader,nounits").strip())
             if slot == "enc":
@@ -109,38 +118,51 @@ def get_gpu_state() -> tuple:
         if dec: parts.append(f"{dec} decoder{'s' if dec > 1 else ''}")
         return "busy", f"Hardware transcoding ({', '.join(parts)})"
 
-    # 2. CUDA compute processes — exclude our own miner
+    # Build set of PIDs that belong to our miner process tree
+    miner_pids = _miner_pid_tree()
+
+    # 2. Per-process SM utilisation via pmon
+    #    Column order: gpu  pid  type  sm  mem  enc  dec  command
     try:
-        raw = _smi("--query-compute-apps=pid,process_name,used_gpu_memory", "--format=csv,noheader")
-        others = []
+        raw = subprocess.run(
+            ["nvidia-smi", "pmon", "-s", "u", "-c", "1"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout
+        other_sm: dict[str, int] = {}   # name → sm%
         for line in raw.splitlines():
             line = line.strip()
-            if not line:
+            if not line or line.startswith("#"):
                 continue
-            parts = [p.strip() for p in line.split(",")]
+            cols = line.split()
+            if len(cols) < 8:
+                continue
             try:
-                pid = int(parts[0])
+                pid = int(cols[1])
+                sm  = int(cols[3])   # "-" becomes ValueError → skip
             except ValueError:
                 continue
-            name = parts[1] if len(parts) > 1 else "unknown"
-            if miner_proc and pid == miner_proc.pid:
+            if pid in miner_pids:
                 continue
-            # Skip child processes of our miner (pwsh spawns the actual miner binary)
-            if miner_proc and _is_child_of(pid, miner_proc.pid):
-                continue
-            # Skip processes matching user-configured exclusion patterns
-            if any(pat in name for pat in EXCLUDED_PROCESS_PATTERNS):
-                continue
-            others.append(f"{name} (pid {pid})")
-        if others:
-            return "busy", f"GPU compute: {', '.join(others)}"
-    except Exception as e:
-        log.warning(f"compute-apps query failed: {e}")
+            cmd = cols[7]
+            if sm > 0:
+                other_sm[cmd] = other_sm.get(cmd, 0) + sm
 
-    # 3. Raw utilisation fallback — only when no miner is running
-    if miner_proc is None:
+        total_other_sm = sum(other_sm.values())
+        if total_other_sm >= GPU_UTIL_THRESHOLD:
+            culprits = ", ".join(f"{n}({v}%)" for n, v in sorted(other_sm.items(),
+                                                                   key=lambda x: -x[1]))
+            return "busy", f"Non-miner GPU compute {total_other_sm}% SM: {culprits}"
+
+        return "idle", ""
+
+    except Exception as e:
+        log.debug(f"pmon failed ({e}), falling back to raw utilisation")
+
+    # 3. Fallback: raw GPU util (only reliable when miner is not running)
+    if not miner_pids:
         try:
-            util = int(_smi("--query-gpu=utilization.gpu", "--format=csv,noheader,nounits").strip())
+            util = int(_smi("--query-gpu=utilization.gpu",
+                            "--format=csv,noheader,nounits").strip())
             if util >= GPU_UTIL_THRESHOLD:
                 return "busy", f"GPU utilisation {util}% (threshold {GPU_UTIL_THRESHOLD}%)"
         except Exception:
@@ -149,16 +171,35 @@ def get_gpu_state() -> tuple:
     return "idle", ""
 
 
-def _is_child_of(pid: int, parent_pid: int) -> bool:
+def _miner_pid_tree() -> set:
+    """Return the PID of the miner process and all its descendants."""
+    if miner_proc is None:
+        return set()
+    pids = {miner_proc.pid}
     try:
-        with open(f"/proc/{pid}/status") as f:
-            for line in f:
-                if line.startswith("PPid:"):
-                    ppid = int(line.split()[1])
-                    return ppid == parent_pid or _is_child_of(ppid, parent_pid)
+        result = subprocess.run(
+            ["pgrep", "-P", str(miner_proc.pid)],
+            capture_output=True, text=True,
+        )
+        for line in result.stdout.splitlines():
+            try:
+                child = int(line.strip())
+                pids.add(child)
+                # One more level — pwsh → miner binary → possible subprocesses
+                result2 = subprocess.run(
+                    ["pgrep", "-P", str(child)],
+                    capture_output=True, text=True,
+                )
+                for l2 in result2.stdout.splitlines():
+                    try:
+                        pids.add(int(l2.strip()))
+                    except ValueError:
+                        pass
+            except ValueError:
+                pass
     except Exception:
         pass
-    return False
+    return pids
 
 
 def get_gpu_power_watts() -> float | None:
@@ -528,10 +569,7 @@ def main():
 
     log.info("mining_manager starting up")
     log.info(f"RainbowMiner dir: {RAINBOWMINER_DIR}")
-    if EXCLUDED_PROCESS_PATTERNS:
-        log.info(f"Ignoring GPU processes matching: {', '.join(EXCLUDED_PROCESS_PATTERNS)}")
-    else:
-        log.info("No process exclusions configured (EXCLUDED_PROCESS_PATTERNS is empty)")
+    log.info(f"GPU detection: encoder sessions + per-process SM% via pmon (threshold {GPU_UTIL_THRESHOLD}%)")
 
     sched = Scheduler()
     for t in REPORT_TIMES:
